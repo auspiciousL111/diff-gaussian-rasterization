@@ -71,24 +71,76 @@ __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const 
 }
 
 // Forward version of 2D covariance matrix computation
-__device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y, float tan_fovx, float tan_fovy, const float* cov3D, const float* viewmatrix)
+__device__ float3 computeCov2D(
+	const float3& mean,
+	float focal_x,
+	float focal_y,
+	float tan_fovx,
+	float tan_fovy,
+	const float* cov3D,
+	const float* viewmatrix,
+	int projection_mode,
+	float ortho_scale_x,
+	float ortho_scale_y,
+	float isar_window_size)
 {
-	// The following models the steps outlined by equations 29
-	// and 31 in "EWA Splatting" (Zwicker et al., 2002). 
-	// Additionally considers aspect / scaling of viewport.
-	// Transposes used to account for row-/column-major conventions.
-	float3 t = transformPoint4x3(mean, viewmatrix);
+	const int PROJECTION_PERSPECTIVE = 0;
 
-	const float limx = 1.3f * tan_fovx;
-	const float limy = 1.3f * tan_fovy;
-	const float txtz = t.x / t.z;
-	const float tytz = t.y / t.z;
-	t.x = min(limx, max(-limx, txtz)) * t.z;
-	t.y = min(limy, max(-limy, tytz)) * t.z;
+	if (projection_mode == PROJECTION_PERSPECTIVE)
+	{
+		// Official perspective path (unchanged): EWA Splatting style Jacobian.
+		// The following models the steps outlined by equations 29
+		// and 31 in "EWA Splatting" (Zwicker et al., 2002).
+		// Additionally considers aspect / scaling of viewport.
+		// Transposes used to account for row-/column-major conventions.
+		float3 t = transformPoint4x3(mean, viewmatrix);
+
+		const float limx = 1.3f * tan_fovx;
+		const float limy = 1.3f * tan_fovy;
+		const float txtz = t.x / t.z;
+		const float tytz = t.y / t.z;
+		t.x = min(limx, max(-limx, txtz)) * t.z;
+		t.y = min(limy, max(-limy, tytz)) * t.z;
+
+		glm::mat3 J = glm::mat3(
+			focal_x / t.z, 0.0f, -(focal_x * t.x) / (t.z * t.z),
+			0.0f, focal_y / t.z, -(focal_y * t.y) / (t.z * t.z),
+			0, 0, 0);
+
+		glm::mat3 W = glm::mat3(
+			viewmatrix[0], viewmatrix[4], viewmatrix[8],
+			viewmatrix[1], viewmatrix[5], viewmatrix[9],
+			viewmatrix[2], viewmatrix[6], viewmatrix[10]);
+
+		glm::mat3 T = W * J;
+
+		glm::mat3 Vrk = glm::mat3(
+			cov3D[0], cov3D[1], cov3D[2],
+			cov3D[1], cov3D[3], cov3D[4],
+			cov3D[2], cov3D[4], cov3D[5]);
+
+		glm::mat3 cov = glm::transpose(T) * glm::transpose(Vrk) * T;
+
+		return { float(cov[0][0]), float(cov[0][1]), float(cov[1][1]) };
+	}
+
+	// New orthographic / ISAR forward path.
+	float sx = ortho_scale_x;
+	float sy = ortho_scale_y;
+	if (fabsf(sx) < 1e-6f || fabsf(sy) < 1e-6f)
+	{
+		const float fallback = fmaxf(isar_window_size, 1e-3f);
+		sx = fallback;
+		sy = fallback;
+	}
+
+	// Use explicit orthographic scaling from view coordinates to NDC-like image plane.
+	const float scale_x = 2.0f / fmaxf(fabsf(sx), 1e-6f);
+	const float scale_y = 2.0f / fmaxf(fabsf(sy), 1e-6f);
 
 	glm::mat3 J = glm::mat3(
-		focal_x / t.z, 0.0f, -(focal_x * t.x) / (t.z * t.z),
-		0.0f, focal_y / t.z, -(focal_y * t.y) / (t.z * t.z),
+		scale_x, 0.0f, 0.0f,
+		0.0f, scale_y, 0.0f,
 		0, 0, 0);
 
 	glm::mat3 W = glm::mat3(
@@ -180,11 +232,6 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	bool prefiltered,
 	bool antialiasing)
 {
-	(void)projection_mode;
-	(void)ortho_scale_x;
-	(void)ortho_scale_y;
-	(void)isar_window_size;
-
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= P)
 		return;
@@ -199,11 +246,36 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	if (!in_frustum(idx, orig_points, viewmatrix, projmatrix, prefiltered, p_view))
 		return;
 
+	const int PROJECTION_PERSPECTIVE = 0;
+
 	// Transform point by projecting
 	float3 p_orig = { orig_points[3 * idx], orig_points[3 * idx + 1], orig_points[3 * idx + 2] };
-	float4 p_hom = transformPoint4x4(p_orig, projmatrix);
-	float p_w = 1.0f / (p_hom.w + 0.0000001f);
-	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
+	float3 p_proj;
+	if (projection_mode == PROJECTION_PERSPECTIVE)
+	{
+		// Official perspective path (unchanged): clip-space projection with perspective divide.
+		float4 p_hom = transformPoint4x4(p_orig, projmatrix);
+		float p_w = 1.0f / (p_hom.w + 0.0000001f);
+		p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
+	}
+	else
+	{
+		// New orthographic / ISAR forward projection branch using view-space linear mapping.
+		float sx = ortho_scale_x;
+		float sy = ortho_scale_y;
+		if (fabsf(sx) < 1e-6f || fabsf(sy) < 1e-6f)
+		{
+			const float fallback = fmaxf(isar_window_size, 1e-3f);
+			sx = fallback;
+			sy = fallback;
+		}
+
+		const float scale_x = 2.0f / fmaxf(fabsf(sx), 1e-6f);
+		const float scale_y = 2.0f / fmaxf(fabsf(sy), 1e-6f);
+		const float x_ndc = min(1.3f, max(-1.3f, p_view.x * scale_x));
+		const float y_ndc = min(1.3f, max(-1.3f, p_view.y * scale_y));
+		p_proj = { x_ndc, y_ndc, p_view.z };
+	}
 
 	// If 3D covariance matrix is precomputed, use it, otherwise compute
 	// from scaling and rotation parameters. 
@@ -219,7 +291,18 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	}
 
 	// Compute 2D screen-space covariance matrix
-	float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix);
+	float3 cov = computeCov2D(
+		p_orig,
+		focal_x,
+		focal_y,
+		tan_fovx,
+		tan_fovy,
+		cov3D,
+		viewmatrix,
+		projection_mode,
+		ortho_scale_x,
+		ortho_scale_y,
+		isar_window_size);
 
 	constexpr float h_var = 0.3f;
 	const float det_cov = cov.x * cov.z - cov.y * cov.y;
