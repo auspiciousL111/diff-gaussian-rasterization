@@ -165,6 +165,10 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	const int W, int H,
 	const float tan_fovx, float tan_fovy,
 	const float focal_x, float focal_y,
+	const int projection_mode,
+	const float ortho_scale_x,
+	const float ortho_scale_y,
+	const float isar_window_size,
 	int* radii,
 	float2* points_xy_image,
 	float* depths,
@@ -176,6 +180,11 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	bool prefiltered,
 	bool antialiasing)
 {
+	(void)projection_mode;
+	(void)ortho_scale_x;
+	(void)ortho_scale_y;
+	(void)isar_window_size;
+
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= P)
 		return;
@@ -442,6 +451,10 @@ void FORWARD::preprocess(int P, int D, int M,
 	const int W, int H,
 	const float focal_x, float focal_y,
 	const float tan_fovx, float tan_fovy,
+	const int projection_mode,
+	const float ortho_scale_x,
+	const float ortho_scale_y,
+	const float isar_window_size,
 	int* radii,
 	float2* means2D,
 	float* depths,
@@ -470,6 +483,10 @@ void FORWARD::preprocess(int P, int D, int M,
 		W, H,
 		tan_fovx, tan_fovy,
 		focal_x, focal_y,
+		projection_mode,
+		ortho_scale_x,
+		ortho_scale_y,
+		isar_window_size,
 		radii,
 		means2D,
 		depths,

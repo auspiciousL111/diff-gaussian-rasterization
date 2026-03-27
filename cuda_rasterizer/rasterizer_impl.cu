@@ -214,6 +214,10 @@ int CudaRasterizer::Rasterizer::forward(
 	const float* projmatrix,
 	const float* cam_pos,
 	const float tan_fovx, float tan_fovy,
+	const int projection_mode,
+	const float ortho_scale_x,
+	const float ortho_scale_y,
+	const float isar_window_size,
 	const bool prefiltered,
 	float* out_color,
 	float* depth,
@@ -263,6 +267,10 @@ int CudaRasterizer::Rasterizer::forward(
 		width, height,
 		focal_x, focal_y,
 		tan_fovx, tan_fovy,
+		projection_mode,
+		ortho_scale_x,
+		ortho_scale_y,
+		isar_window_size,
 		radii,
 		geomState.means2D,
 		geomState.depths,
@@ -358,6 +366,10 @@ void CudaRasterizer::Rasterizer::backward(
 	const float* projmatrix,
 	const float* campos,
 	const float tan_fovx, float tan_fovy,
+	const int projection_mode,
+	const float ortho_scale_x,
+	const float ortho_scale_y,
+	const float isar_window_size,
 	const int* radii,
 	char* geom_buffer,
 	char* binning_buffer,
@@ -377,6 +389,11 @@ void CudaRasterizer::Rasterizer::backward(
 	bool antialiasing,
 	bool debug)
 {
+	(void)projection_mode;
+	(void)ortho_scale_x;
+	(void)ortho_scale_y;
+	(void)isar_window_size;
+
 	GeometryState geomState = GeometryState::fromChunk(geom_buffer, P);
 	BinningState binningState = BinningState::fromChunk(binning_buffer, R);
 	ImageState imgState = ImageState::fromChunk(img_buffer, width * height);
