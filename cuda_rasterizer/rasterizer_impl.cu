@@ -389,11 +389,6 @@ void CudaRasterizer::Rasterizer::backward(
 	bool antialiasing,
 	bool debug)
 {
-	(void)projection_mode;
-	(void)ortho_scale_x;
-	(void)ortho_scale_y;
-	(void)isar_window_size;
-
 	GeometryState geomState = GeometryState::fromChunk(geom_buffer, P);
 	BinningState binningState = BinningState::fromChunk(binning_buffer, R);
 	ImageState imgState = ImageState::fromChunk(img_buffer, width * height);
@@ -452,6 +447,10 @@ void CudaRasterizer::Rasterizer::backward(
 		projmatrix,
 		focal_x, focal_y,
 		tan_fovx, tan_fovy,
+		projection_mode,
+		ortho_scale_x,
+		ortho_scale_y,
+		isar_window_size,
 		(glm::vec3*)campos,
 		(float3*)dL_dmean2D,
 		dL_dconic,

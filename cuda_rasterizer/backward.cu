@@ -150,6 +150,10 @@ __global__ void computeCov2DCUDA(int P,
 	const float* cov3Ds,
 	const float h_x, float h_y,
 	const float tan_fovx, float tan_fovy,
+	const int projection_mode,
+	const float ortho_scale_x,
+	const float ortho_scale_y,
+	const float isar_window_size,
 	const float* view_matrix,
 	const float* opacities,
 	const float* dL_dconics,
@@ -171,20 +175,39 @@ __global__ void computeCov2DCUDA(int P,
 	float3 mean = means[idx];
 	float3 dL_dconic = { dL_dconics[4 * idx], dL_dconics[4 * idx + 1], dL_dconics[4 * idx + 3] };
 	float3 t = transformPoint4x3(mean, view_matrix);
-	
-	const float limx = 1.3f * tan_fovx;
-	const float limy = 1.3f * tan_fovy;
-	const float txtz = t.x / t.z;
-	const float tytz = t.y / t.z;
-	t.x = min(limx, max(-limx, txtz)) * t.z;
-	t.y = min(limy, max(-limy, tytz)) * t.z;
-	
-	const float x_grad_mul = txtz < -limx || txtz > limx ? 0 : 1;
-	const float y_grad_mul = tytz < -limy || tytz > limy ? 0 : 1;
 
-	glm::mat3 J = glm::mat3(h_x / t.z, 0.0f, -(h_x * t.x) / (t.z * t.z),
-		0.0f, h_y / t.z, -(h_y * t.y) / (t.z * t.z),
-		0, 0, 0);
+	const int PROJECTION_PERSPECTIVE = 0;
+	glm::mat3 J;
+	if (projection_mode == PROJECTION_PERSPECTIVE)
+	{
+		const float limx = 1.3f * tan_fovx;
+		const float limy = 1.3f * tan_fovy;
+		const float txtz = t.x / t.z;
+		const float tytz = t.y / t.z;
+		t.x = min(limx, max(-limx, txtz)) * t.z;
+		t.y = min(limy, max(-limy, tytz)) * t.z;
+
+		J = glm::mat3(h_x / t.z, 0.0f, -(h_x * t.x) / (t.z * t.z),
+			0.0f, h_y / t.z, -(h_y * t.y) / (t.z * t.z),
+			0, 0, 0);
+	}
+	else
+	{
+		float sx = ortho_scale_x;
+		float sy = ortho_scale_y;
+		if (fabsf(sx) < 1e-6f || fabsf(sy) < 1e-6f)
+		{
+			const float fallback = fmaxf(isar_window_size, 1e-3f);
+			sx = fallback;
+			sy = fallback;
+		}
+
+		const float scale_x = 2.0f / fmaxf(fabsf(sx), 1e-6f);
+		const float scale_y = 2.0f / fmaxf(fabsf(sy), 1e-6f);
+		J = glm::mat3(scale_x, 0.0f, 0.0f,
+			0.0f, scale_y, 0.0f,
+			0, 0, 0);
+	}
 
 	glm::mat3 W = glm::mat3(
 		view_matrix[0], view_matrix[4], view_matrix[8],
@@ -302,17 +325,29 @@ __global__ void computeCov2DCUDA(int P,
 	float dL_dJ11 = W[1][0] * dL_dT10 + W[1][1] * dL_dT11 + W[1][2] * dL_dT12;
 	float dL_dJ12 = W[2][0] * dL_dT10 + W[2][1] * dL_dT11 + W[2][2] * dL_dT12;
 
-	float tz = 1.f / t.z;
-	float tz2 = tz * tz;
-	float tz3 = tz2 * tz;
+	float dL_dtx = 0.0f;
+	float dL_dty = 0.0f;
+	float dL_dtz = 0.0f;
+	if (projection_mode == PROJECTION_PERSPECTIVE)
+	{
+		const float limx = 1.3f * tan_fovx;
+		const float limy = 1.3f * tan_fovy;
+		const float txtz = t.x / t.z;
+		const float tytz = t.y / t.z;
+		const float x_grad_mul = txtz < -limx || txtz > limx ? 0 : 1;
+		const float y_grad_mul = tytz < -limy || tytz > limy ? 0 : 1;
 
-	// Gradients of loss w.r.t. transformed Gaussian mean t
-	float dL_dtx = x_grad_mul * -h_x * tz2 * dL_dJ02;
-	float dL_dty = y_grad_mul * -h_y * tz2 * dL_dJ12;
-	float dL_dtz = -h_x * tz2 * dL_dJ00 - h_y * tz2 * dL_dJ11 + (2 * h_x * t.x) * tz3 * dL_dJ02 + (2 * h_y * t.y) * tz3 * dL_dJ12;
-	// Account for inverse depth gradients
+		float tz = 1.f / t.z;
+		float tz2 = tz * tz;
+		float tz3 = tz2 * tz;
+		dL_dtx = x_grad_mul * -h_x * tz2 * dL_dJ02;
+		dL_dty = y_grad_mul * -h_y * tz2 * dL_dJ12;
+		dL_dtz = -h_x * tz2 * dL_dJ00 - h_y * tz2 * dL_dJ11 + (2 * h_x * t.x) * tz3 * dL_dJ02 + (2 * h_y * t.y) * tz3 * dL_dJ12;
+	}
+
+	// inverse-depth path is shared by both projection modes: invdepth = 1 / t.z
 	if (dL_dinvdepth)
-	dL_dtz -= dL_dinvdepth[idx] / (t.z * t.z);
+		dL_dtz -= dL_dinvdepth[idx] / (t.z * t.z);
 
 
 	// Account for transformation of mean to t
@@ -405,7 +440,12 @@ __global__ void preprocessCUDA(
 	const glm::vec3* scales,
 	const glm::vec4* rotations,
 	const float scale_modifier,
+	const float* view,
 	const float* proj,
+	const int projection_mode,
+	const float ortho_scale_x,
+	const float ortho_scale_y,
+	const float isar_window_size,
 	const glm::vec3* campos,
 	const float3* dL_dmean2D,
 	glm::vec3* dL_dmeans,
@@ -423,17 +463,47 @@ __global__ void preprocessCUDA(
 	float3 m = means[idx];
 
 	// Taking care of gradients from the screenspace points
-	float4 m_hom = transformPoint4x4(m, proj);
-	float m_w = 1.0f / (m_hom.w + 0.0000001f);
+	const int PROJECTION_PERSPECTIVE = 0;
 
-	// Compute loss gradient w.r.t. 3D means due to gradients of 2D means
-	// from rendering procedure
+	// Compute loss gradient w.r.t. 3D means due to gradients of 2D means from rendering.
 	glm::vec3 dL_dmean;
-	float mul1 = (proj[0] * m.x + proj[4] * m.y + proj[8] * m.z + proj[12]) * m_w * m_w;
-	float mul2 = (proj[1] * m.x + proj[5] * m.y + proj[9] * m.z + proj[13]) * m_w * m_w;
-	dL_dmean.x = (proj[0] * m_w - proj[3] * mul1) * dL_dmean2D[idx].x + (proj[1] * m_w - proj[3] * mul2) * dL_dmean2D[idx].y;
-	dL_dmean.y = (proj[4] * m_w - proj[7] * mul1) * dL_dmean2D[idx].x + (proj[5] * m_w - proj[7] * mul2) * dL_dmean2D[idx].y;
-	dL_dmean.z = (proj[8] * m_w - proj[11] * mul1) * dL_dmean2D[idx].x + (proj[9] * m_w - proj[11] * mul2) * dL_dmean2D[idx].y;
+	if (projection_mode == PROJECTION_PERSPECTIVE)
+	{
+		float4 m_hom = transformPoint4x4(m, proj);
+		float m_w = 1.0f / (m_hom.w + 0.0000001f);
+		float mul1 = (proj[0] * m.x + proj[4] * m.y + proj[8] * m.z + proj[12]) * m_w * m_w;
+		float mul2 = (proj[1] * m.x + proj[5] * m.y + proj[9] * m.z + proj[13]) * m_w * m_w;
+		dL_dmean.x = (proj[0] * m_w - proj[3] * mul1) * dL_dmean2D[idx].x + (proj[1] * m_w - proj[3] * mul2) * dL_dmean2D[idx].y;
+		dL_dmean.y = (proj[4] * m_w - proj[7] * mul1) * dL_dmean2D[idx].x + (proj[5] * m_w - proj[7] * mul2) * dL_dmean2D[idx].y;
+		dL_dmean.z = (proj[8] * m_w - proj[11] * mul1) * dL_dmean2D[idx].x + (proj[9] * m_w - proj[11] * mul2) * dL_dmean2D[idx].y;
+	}
+	else
+	{
+		float3 t = transformPoint4x3(m, view);
+		float sx = ortho_scale_x;
+		float sy = ortho_scale_y;
+		if (fabsf(sx) < 1e-6f || fabsf(sy) < 1e-6f)
+		{
+			const float fallback = fmaxf(isar_window_size, 1e-3f);
+			sx = fallback;
+			sy = fallback;
+		}
+
+		const float scale_x = 2.0f / fmaxf(fabsf(sx), 1e-6f);
+		const float scale_y = 2.0f / fmaxf(fabsf(sy), 1e-6f);
+		const float x_ndc = t.x * scale_x;
+		const float y_ndc = t.y * scale_y;
+		const float x_grad_mul = (x_ndc < -1.3f || x_ndc > 1.3f) ? 0.0f : 1.0f;
+		const float y_grad_mul = (y_ndc < -1.3f || y_ndc > 1.3f) ? 0.0f : 1.0f;
+
+		float3 dL_dt = {
+			dL_dmean2D[idx].x * x_grad_mul * scale_x,
+			dL_dmean2D[idx].y * y_grad_mul * scale_y,
+			0.0f
+		};
+		float3 dL_dm = transformVec4x3Transpose(dL_dt, view);
+		dL_dmean = glm::vec3(dL_dm.x, dL_dm.y, dL_dm.z);
+	}
 
 	// That's the second part of the mean gradient. Previous computation
 	// of cov2D and following SH conversion also affects it.
@@ -652,6 +722,10 @@ void BACKWARD::preprocess(
 	const float* projmatrix,
 	const float focal_x, float focal_y,
 	const float tan_fovx, float tan_fovy,
+	const int projection_mode,
+	const float ortho_scale_x,
+	const float ortho_scale_y,
+	const float isar_window_size,
 	const glm::vec3* campos,
 	const float3* dL_dmean2D,
 	const float* dL_dconic,
@@ -678,6 +752,10 @@ void BACKWARD::preprocess(
 		focal_y,
 		tan_fovx,
 		tan_fovy,
+		projection_mode,
+		ortho_scale_x,
+		ortho_scale_y,
+		isar_window_size,
 		viewmatrix,
 		opacities,
 		dL_dconic,
@@ -699,7 +777,12 @@ void BACKWARD::preprocess(
 		(glm::vec3*)scales,
 		(glm::vec4*)rotations,
 		scale_modifier,
+		viewmatrix,
 		projmatrix,
+		projection_mode,
+		ortho_scale_x,
+		ortho_scale_y,
+		isar_window_size,
 		campos,
 		(float3*)dL_dmean2D,
 		(glm::vec3*)dL_dmean3D,
