@@ -153,17 +153,45 @@ __forceinline__ __device__ bool in_frustum(int idx,
 	const float* viewmatrix,
 	const float* projmatrix,
 	bool prefiltered,
-	float3& p_view)
+	float3& p_view,
+	int projection_mode,
+	float ortho_scale_x,
+	float ortho_scale_y,
+	float isar_window_size)
 {
 	float3 p_orig = { orig_points[3 * idx], orig_points[3 * idx + 1], orig_points[3 * idx + 2] };
-
-	// Bring points to screen space
-	float4 p_hom = transformPoint4x4(p_orig, projmatrix);
-	float p_w = 1.0f / (p_hom.w + 0.0000001f);
-	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
 	p_view = transformPoint4x3(p_orig, viewmatrix);
 
-	if (p_view.z <= 0.2f)// || ((p_proj.x < -1.3 || p_proj.x > 1.3 || p_proj.y < -1.3 || p_proj.y > 1.3)))
+	const int PROJECTION_PERSPECTIVE = 0;
+	bool in_plane = true;
+	if (projection_mode == PROJECTION_PERSPECTIVE)
+	{
+		// Perspective: keep original clip-space projection path.
+		float4 p_hom = transformPoint4x4(p_orig, projmatrix);
+		float p_w = 1.0f / (p_hom.w + 0.0000001f);
+		float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
+		(void)p_proj;
+	}
+	else
+	{
+		// Orthographic / ISAR surrogate:
+		// use view-space linear map to NDC-like plane and apply projection-aware culling.
+		float sx = ortho_scale_x;
+		float sy = ortho_scale_y;
+		if (fabsf(sx) < 1e-6f || fabsf(sy) < 1e-6f)
+		{
+			const float fallback = fmaxf(isar_window_size, 1e-3f);
+			sx = fallback;
+			sy = fallback;
+		}
+		const float scale_x = 2.0f / fmaxf(fabsf(sx), 1e-6f);
+		const float scale_y = 2.0f / fmaxf(fabsf(sy), 1e-6f);
+		const float x_ndc = p_view.x * scale_x;
+		const float y_ndc = p_view.y * scale_y;
+		in_plane = (x_ndc >= -1.3f && x_ndc <= 1.3f && y_ndc >= -1.3f && y_ndc <= 1.3f);
+	}
+
+	if (p_view.z <= 0.2f || !in_plane)
 	{
 		if (prefiltered)
 		{
@@ -173,6 +201,17 @@ __forceinline__ __device__ bool in_frustum(int idx,
 		return false;
 	}
 	return true;
+}
+
+__forceinline__ __device__ bool in_frustum(int idx,
+	const float* orig_points,
+	const float* viewmatrix,
+	const float* projmatrix,
+	bool prefiltered,
+	float3& p_view)
+{
+	// Backward-compatible wrapper used by perspective-only callsites.
+	return in_frustum(idx, orig_points, viewmatrix, projmatrix, prefiltered, p_view, 0, 0.0f, 0.0f, 0.0f);
 }
 
 #define CHECK_CUDA(A, debug) \

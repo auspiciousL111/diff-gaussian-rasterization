@@ -134,13 +134,18 @@ __device__ float3 computeCov2D(
 		sy = fallback;
 	}
 
-	// Use explicit orthographic scaling from view coordinates to NDC-like image plane.
-	const float scale_x = 2.0f / fmaxf(fabsf(sx), 1e-6f);
-	const float scale_y = 2.0f / fmaxf(fabsf(sy), 1e-6f);
+	// Orthographic Jacobian in pixel units:
+	// x_ndc = 2 * x_c / Sx, u = (W/2) * (x_ndc + 1) - 0.5 -> du/dx_c = W/Sx.
+	// W/2 and H/2 are recovered from perspective camera intrinsics as
+	// (focal_x * tan_fovx) and (focal_y * tan_fovy), respectively.
+	const float half_w = fmaxf(focal_x * tan_fovx, 1e-6f);
+	const float half_h = fmaxf(focal_y * tan_fovy, 1e-6f);
+	const float pix_scale_x = (2.0f * half_w) / fmaxf(fabsf(sx), 1e-6f);
+	const float pix_scale_y = (2.0f * half_h) / fmaxf(fabsf(sy), 1e-6f);
 
 	glm::mat3 J = glm::mat3(
-		scale_x, 0.0f, 0.0f,
-		0.0f, scale_y, 0.0f,
+		pix_scale_x, 0.0f, 0.0f,
+		0.0f, pix_scale_y, 0.0f,
 		0, 0, 0);
 
 	glm::mat3 W = glm::mat3(
@@ -243,7 +248,17 @@ __global__ void preprocessCUDA(int P, int D, int M,
 
 	// Perform near culling, quit if outside.
 	float3 p_view;
-	if (!in_frustum(idx, orig_points, viewmatrix, projmatrix, prefiltered, p_view))
+	if (!in_frustum(
+		idx,
+		orig_points,
+		viewmatrix,
+		projmatrix,
+		prefiltered,
+		p_view,
+		projection_mode,
+		ortho_scale_x,
+		ortho_scale_y,
+		isar_window_size))
 		return;
 
 	const int PROJECTION_PERSPECTIVE = 0;

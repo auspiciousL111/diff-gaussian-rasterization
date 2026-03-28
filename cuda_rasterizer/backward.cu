@@ -202,10 +202,13 @@ __global__ void computeCov2DCUDA(int P,
 			sy = fallback;
 		}
 
-		const float scale_x = 2.0f / fmaxf(fabsf(sx), 1e-6f);
-		const float scale_y = 2.0f / fmaxf(fabsf(sy), 1e-6f);
-		J = glm::mat3(scale_x, 0.0f, 0.0f,
-			0.0f, scale_y, 0.0f,
+		// Orthographic Jacobian in pixel units.
+		const float half_w = fmaxf(h_x * tan_fovx, 1e-6f);
+		const float half_h = fmaxf(h_y * tan_fovy, 1e-6f);
+		const float pix_scale_x = (2.0f * half_w) / fmaxf(fabsf(sx), 1e-6f);
+		const float pix_scale_y = (2.0f * half_h) / fmaxf(fabsf(sy), 1e-6f);
+		J = glm::mat3(pix_scale_x, 0.0f, 0.0f,
+			0.0f, pix_scale_y, 0.0f,
 			0, 0, 0);
 	}
 
@@ -442,6 +445,10 @@ __global__ void preprocessCUDA(
 	const float scale_modifier,
 	const float* view,
 	const float* proj,
+	const float focal_x,
+	const float focal_y,
+	const float tan_fovx,
+	const float tan_fovy,
 	const int projection_mode,
 	const float ortho_scale_x,
 	const float ortho_scale_y,
@@ -489,16 +496,25 @@ __global__ void preprocessCUDA(
 			sy = fallback;
 		}
 
-		const float scale_x = 2.0f / fmaxf(fabsf(sx), 1e-6f);
-		const float scale_y = 2.0f / fmaxf(fabsf(sy), 1e-6f);
-		const float x_ndc = t.x * scale_x;
-		const float y_ndc = t.y * scale_y;
+		const float scale_x_ndc = 2.0f / fmaxf(fabsf(sx), 1e-6f);
+		const float scale_y_ndc = 2.0f / fmaxf(fabsf(sy), 1e-6f);
+		const float x_ndc = t.x * scale_x_ndc;
+		const float y_ndc = t.y * scale_y_ndc;
 		const float x_grad_mul = (x_ndc < -1.3f || x_ndc > 1.3f) ? 0.0f : 1.0f;
 		const float y_grad_mul = (y_ndc < -1.3f || y_ndc > 1.3f) ? 0.0f : 1.0f;
 
+		// Keep mean backward numerically identical while expressing the chain
+		// via pixel Jacobian (du/dx_c = W/Sx, dv/dy_c = H/Sy).
+		const float half_w = fmaxf(focal_x * tan_fovx, 1e-6f);
+		const float half_h = fmaxf(focal_y * tan_fovy, 1e-6f);
+		const float pix_scale_x = (2.0f * half_w) / fmaxf(fabsf(sx), 1e-6f);
+		const float pix_scale_y = (2.0f * half_h) / fmaxf(fabsf(sy), 1e-6f);
+		const float dL_du = dL_dmean2D[idx].x / half_w;
+		const float dL_dv = dL_dmean2D[idx].y / half_h;
+
 		float3 dL_dt = {
-			dL_dmean2D[idx].x * x_grad_mul * scale_x,
-			dL_dmean2D[idx].y * y_grad_mul * scale_y,
+			dL_du * x_grad_mul * pix_scale_x,
+			dL_dv * y_grad_mul * pix_scale_y,
 			0.0f
 		};
 		float3 dL_dm = transformVec4x3Transpose(dL_dt, view);
@@ -779,6 +795,10 @@ void BACKWARD::preprocess(
 		scale_modifier,
 		viewmatrix,
 		projmatrix,
+		focal_x,
+		focal_y,
+		tan_fovx,
+		tan_fovy,
 		projection_mode,
 		ortho_scale_x,
 		ortho_scale_y,
