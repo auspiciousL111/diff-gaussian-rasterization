@@ -97,6 +97,12 @@ RasterizeGaussiansCUDA(
 		M = sh.size(1);
       }
 
+      const float* sh_ptr = sh.numel() > 0 ? sh.contiguous().data_ptr<float>() : nullptr;
+      const float* color_ptr = colors.numel() > 0 ? colors.contiguous().data_ptr<float>() : nullptr;
+      const float* scale_ptr = scales.numel() > 0 ? scales.contiguous().data_ptr<float>() : nullptr;
+      const float* rotation_ptr = rotations.numel() > 0 ? rotations.contiguous().data_ptr<float>() : nullptr;
+      const float* cov3d_ptr = cov3D_precomp.numel() > 0 ? cov3D_precomp.contiguous().data_ptr<float>() : nullptr;
+
 	  rendered = CudaRasterizer::Rasterizer::forward(
 	    geomFunc,
 		binningFunc,
@@ -105,13 +111,13 @@ RasterizeGaussiansCUDA(
 		background.contiguous().data<float>(),
 		W, H,
 		means3D.contiguous().data<float>(),
-		sh.contiguous().data_ptr<float>(),
-		colors.contiguous().data<float>(), 
+		sh_ptr,
+		color_ptr, 
 		opacity.contiguous().data<float>(), 
-		scales.contiguous().data_ptr<float>(),
+		scale_ptr,
 		scale_modifier,
-		rotations.contiguous().data_ptr<float>(),
-		cov3D_precomp.contiguous().data<float>(), 
+		rotation_ptr,
+		cov3d_ptr, 
 		viewmatrix.contiguous().data<float>(), 
 		projmatrix.contiguous().data<float>(),
 		campos.contiguous().data<float>(),
@@ -195,17 +201,23 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 
   if(P != 0)
   {  
+      const float* sh_ptr = sh.numel() > 0 ? sh.contiguous().data_ptr<float>() : nullptr;
+      const float* color_ptr = colors.numel() > 0 ? colors.contiguous().data_ptr<float>() : nullptr;
+      const float* scale_ptr = scales.numel() > 0 ? scales.contiguous().data_ptr<float>() : nullptr;
+      const float* rotation_ptr = rotations.numel() > 0 ? rotations.contiguous().data_ptr<float>() : nullptr;
+      const float* cov3d_ptr = cov3D_precomp.numel() > 0 ? cov3D_precomp.contiguous().data_ptr<float>() : nullptr;
+
 	  CudaRasterizer::Rasterizer::backward(P, degree, M, R,
 	  background.contiguous().data<float>(),
 	  W, H, 
 	  means3D.contiguous().data<float>(),
-	  sh.contiguous().data<float>(),
-	  colors.contiguous().data<float>(),
+	  sh_ptr,
+	  color_ptr,
 	  opacities.contiguous().data<float>(),
-	  scales.data_ptr<float>(),
+	  scale_ptr,
 	  scale_modifier,
-	  rotations.data_ptr<float>(),
-	  cov3D_precomp.contiguous().data<float>(),
+	  rotation_ptr,
+	  cov3d_ptr,
 	  viewmatrix.contiguous().data<float>(),
 	  projmatrix.contiguous().data<float>(),
 	  campos.contiguous().data<float>(),

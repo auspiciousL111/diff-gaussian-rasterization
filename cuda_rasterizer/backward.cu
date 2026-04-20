@@ -348,7 +348,7 @@ __global__ void computeCov2DCUDA(int P,
 		dL_dtz = -h_x * tz2 * dL_dJ00 - h_y * tz2 * dL_dJ11 + (2 * h_x * t.x) * tz3 * dL_dJ02 + (2 * h_y * t.y) * tz3 * dL_dJ12;
 	}
 
-	// inverse-depth path is shared by both projection modes: invdepth = 1 / t.z
+	// Share inverse-depth to t.z gradient path across projection modes.
 	if (dL_dinvdepth)
 		dL_dtz -= dL_dinvdepth[idx] / (t.z * t.z);
 
@@ -526,7 +526,7 @@ __global__ void preprocessCUDA(
 	dL_dmeans[idx] += dL_dmean;
 
 	// Compute gradient updates due to computing colors from SHs
-	if (shs)
+	if (shs && C == 3)
 		computeColorFromSH(idx, D, M, (glm::vec3*)means, *campos, shs, clamped, (glm::vec3*)dL_dcolor, (glm::vec3*)dL_dmeans, (glm::vec3*)dL_dsh);
 
 	// Compute gradient updates due to computing covariance from scale/rotation
@@ -629,8 +629,8 @@ renderCUDA(
 			for (int i = 0; i < C; i++)
 				collected_colors[i * BLOCK_SIZE + block.thread_rank()] = colors[coll_id * C + i];
 
-			if(dL_invdepths)
-			collected_depths[block.thread_rank()] = depths[coll_id];
+			if (dL_invdepths)
+				collected_depths[block.thread_rank()] = depths[coll_id];
 		}
 		block.sync();
 
@@ -653,7 +653,8 @@ renderCUDA(
 
 			const float G = exp(power);
 			const float alpha = min(0.99f, con_o.w * G);
-			if (alpha < 1.0f / 255.0f)
+			constexpr float kAlphaTailMin = 1.0f / 255.0f;
+			if (alpha < kAlphaTailMin)
 				continue;
 
 			T = T / (1.f - alpha);
@@ -682,11 +683,11 @@ renderCUDA(
 			// per Gaussian inverse depths
 			if (dL_dinvdepths)
 			{
-			const float invd = 1.f / collected_depths[j];
-			accum_invdepth_rec = last_alpha * last_invdepth + (1.f - last_alpha) * accum_invdepth_rec;
-			last_invdepth = invd;
-			dL_dalpha += (invd - accum_invdepth_rec) * dL_invdepth;
-			atomicAdd(&(dL_dinvdepths[global_id]), dchannel_dcolor * dL_invdepth);
+				const float invd = 1.f / collected_depths[j];
+				accum_invdepth_rec = last_alpha * last_invdepth + (1.f - last_alpha) * accum_invdepth_rec;
+				last_invdepth = invd;
+				dL_dalpha += (invd - accum_invdepth_rec) * dL_invdepth;
+				atomicAdd(&(dL_dinvdepths[global_id]), dchannel_dcolor * dL_invdepth);
 			}
 
 			dL_dalpha *= T;

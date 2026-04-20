@@ -355,10 +355,17 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// spherical harmonics coefficients to RGB color.
 	if (colors_precomp == nullptr)
 	{
-		glm::vec3 result = computeColorFromSH(idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs, clamped);
-		rgb[idx * C + 0] = result.x;
-		rgb[idx * C + 1] = result.y;
-		rgb[idx * C + 2] = result.z;
+		if (C == 3)
+		{
+			glm::vec3 result = computeColorFromSH(idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs, clamped);
+			rgb[idx * C + 0] = result.x;
+			rgb[idx * C + 1] = result.y;
+			rgb[idx * C + 2] = result.z;
+		}
+		else
+		{
+			rgb[idx * C] = 0.0f;
+		}
 	}
 
 	// Store some useful helper data for the next steps.
@@ -465,7 +472,8 @@ renderCUDA(
 			// and its exponential falloff from mean.
 			// Avoid numerical instabilities (see paper appendix). 
 			float alpha = min(0.99f, con_o.w * exp(power));
-			if (alpha < 1.0f / 255.0f)
+			constexpr float kAlphaTailMin = 1.0f / 255.0f;
+			if (alpha < kAlphaTailMin)
 				continue;
 			float test_T = T * (1 - alpha);
 			if (test_T < 0.0001f)
@@ -478,8 +486,8 @@ renderCUDA(
 			for (int ch = 0; ch < CHANNELS; ch++)
 				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
 
-			if(invdepth)
-			expected_invdepth += (1 / depths[collected_id[j]]) * alpha * T;
+			if (invdepth)
+				expected_invdepth += (1.0f / depths[collected_id[j]]) * alpha * T;
 
 			T = test_T;
 
@@ -499,7 +507,7 @@ renderCUDA(
 			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
 
 		if (invdepth)
-		invdepth[pix_id] = expected_invdepth;// 1. / (expected_depth + T * 1e3);
+			invdepth[pix_id] = expected_invdepth;
 	}
 }
 
